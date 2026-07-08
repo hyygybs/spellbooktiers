@@ -1,0 +1,16 @@
+{
+  "type": "irons_spellbooks:alchemist_cauldron_brew",
+  "base_fluid": {
+    "Amount": 1000,
+    "FluidName": "irons_spellbooks:legendary_ink"
+  },
+  "input": {
+    "item": "minecraft:nether_star"
+  },
+  "results": [
+    {
+      "Amount": 250,
+      "FluidName": "spellbooktiers:mythic_ink"
+    }
+  ]
+}
