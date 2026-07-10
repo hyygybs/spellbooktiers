@@ -22,12 +22,18 @@ abstract class SpellRarityMixin {
 
     @Inject(method = "getChatFormatting", at = @At("HEAD"), cancellable = true, remap = false)
     private void spellbooktiers$getChatFormatting(CallbackInfoReturnable<ChatFormatting> cir) {
-        cir.setReturnValue(SpellbookTiersHooks.getChatFormatting((SpellRarity) (Object) this));
+        SpellRarity rarity = (SpellRarity) (Object) this;
+        if (SpellbookTiersHooks.shouldOverrideRarityDisplay(rarity)) {
+            cir.setReturnValue(SpellbookTiersHooks.getChatFormatting(rarity));
+        }
     }
 
     @Inject(method = "getDisplayName", at = @At("HEAD"), cancellable = true, remap = false)
     private void spellbooktiers$getDisplayName(CallbackInfoReturnable<MutableComponent> cir) {
-        cir.setReturnValue(SpellbookTiersHooks.getDisplayName((SpellRarity) (Object) this));
+        SpellRarity rarity = (SpellRarity) (Object) this;
+        if (SpellbookTiersHooks.shouldOverrideRarityDisplay(rarity)) {
+            cir.setReturnValue(SpellbookTiersHooks.getDisplayName(rarity));
+        }
     }
 
     @Inject(method = "getRawRarityConfigInternal", at = @At("HEAD"), cancellable = true, remap = false)

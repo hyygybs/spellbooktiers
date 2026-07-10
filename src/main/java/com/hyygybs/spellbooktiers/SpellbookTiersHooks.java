@@ -24,8 +24,13 @@ import java.util.Locale;
 public final class SpellbookTiersHooks {
     private static final String MYTHIC_NAME = "MYTHIC";
     private static final String ANCIENT_NAME = "ANCIENT";
+    private static final String ORIGIN_NAME = "ORIGIN";
     private static final List<Double> EXTENDED_DEFAULT = List.of(0.30d, 0.25d, 0.20d, 0.15d, 0.06d, 0.03d, 0.01d);
     private static final double EPSILON = 1.0E-6D;
+    private static final List<String> FANTASY_ENDING_ORIGIN_SPELLS = List.of(
+            "fantasy_ending:multiple_eldritch_blast",
+            "fantasy_ending:time_stop"
+    );
     private static final Unsafe UNSAFE = getUnsafe();
     private static final long ENUM_NAME_OFFSET = objectFieldOffset(Enum.class, "name");
     private static final long ENUM_ORDINAL_OFFSET = objectFieldOffset(Enum.class, "ordinal");
@@ -64,14 +69,18 @@ public final class SpellbookTiersHooks {
     }
 
     public static ChatFormatting getChatFormatting(SpellRarity rarity) {
+        if (isNamedRarity(rarity, MYTHIC_NAME)) {
+            return ChatFormatting.RED;
+        }
+        if (isNamedRarity(rarity, ANCIENT_NAME)) {
+            return ChatFormatting.DARK_BLUE;
+        }
         return switch (rarity.getValue()) {
             case 0 -> ChatFormatting.GRAY;
             case 1 -> ChatFormatting.GREEN;
             case 2 -> ChatFormatting.AQUA;
             case 3 -> ChatFormatting.LIGHT_PURPLE;
             case 4 -> ChatFormatting.GOLD;
-            case 5 -> ChatFormatting.RED;
-            case 6 -> ChatFormatting.DARK_BLUE;
             default -> ChatFormatting.GOLD;
         };
     }
@@ -81,61 +90,94 @@ public final class SpellbookTiersHooks {
                 .withStyle(getChatFormatting(rarity));
     }
 
+    public static boolean shouldOverrideRarityDisplay(SpellRarity rarity) {
+        return isNamedRarity(rarity, MYTHIC_NAME) || isNamedRarity(rarity, ANCIENT_NAME);
+    }
+
     public static List<Double> getRawRarityConfig(List<Double> fromConfig, List<Double> configDefault) {
-        if (isNormalized(fromConfig) && fromConfig.size() == 7) {
+        int expectedSize = getExpectedRarityConfigSize();
+        if (isNormalized(fromConfig) && fromConfig.size() == expectedSize) {
+            return List.copyOf(fromConfig);
+        }
+
+        if (hasOriginRarity() && isNormalized(fromConfig) && fromConfig.size() == 7) {
+            return appendOriginWeight(fromConfig);
+        }
+
+        if (!hasOriginRarity() && isNormalized(fromConfig) && fromConfig.size() == 7) {
             return List.copyOf(fromConfig);
         }
 
         if (isNormalized(fromConfig) && fromConfig.size() == 5) {
-            return expandLegacyRarityConfig(fromConfig);
+            return adaptExpandedConfig(expandLegacyRarityConfig(fromConfig));
         }
 
-        if (isNormalized(configDefault) && configDefault.size() == 7) {
+        if (isNormalized(configDefault) && configDefault.size() == expectedSize) {
             SpellbookTiers.LOGGER.info("Using 7-entry fallback rarity config: {}", configDefault);
             return List.copyOf(configDefault);
         }
 
+        if (hasOriginRarity() && isNormalized(configDefault) && configDefault.size() == 7) {
+            var appended = appendOriginWeight(configDefault);
+            SpellbookTiers.LOGGER.info("Appended FantasyEnding origin slot to 7-entry rarity config: {}", appended);
+            return appended;
+        }
+
         if (isNormalized(configDefault) && configDefault.size() == 5) {
-            var expanded = expandLegacyRarityConfig(configDefault);
+            var expanded = adaptExpandedConfig(expandLegacyRarityConfig(configDefault));
             SpellbookTiers.LOGGER.info("Expanded legacy 5-entry rarity config into 7 tiers: {}", expanded);
             return expanded;
         }
 
-        SpellbookTiers.LOGGER.info("Using built-in Mythic/Ancient rarity defaults: {}", EXTENDED_DEFAULT);
-        return EXTENDED_DEFAULT;
+        var builtIn = adaptExpandedConfig(EXTENDED_DEFAULT);
+        SpellbookTiers.LOGGER.info("Using built-in rarity defaults: {}", builtIn);
+        return builtIn;
     }
 
     public static InkItem getInkForRarity(SpellRarity rarity) {
+        if (isNamedRarity(rarity, MYTHIC_NAME)) {
+            return (InkItem) SpellbookTiers.MYTHIC_INK.get();
+        }
+        if (isNamedRarity(rarity, ANCIENT_NAME)) {
+            return (InkItem) SpellbookTiers.ANCIENT_INK.get();
+        }
         return switch (rarity.getValue()) {
             case 0 -> (InkItem) ItemRegistry.INK_COMMON.get();
             case 1 -> (InkItem) ItemRegistry.INK_UNCOMMON.get();
             case 2 -> (InkItem) ItemRegistry.INK_RARE.get();
             case 3 -> (InkItem) ItemRegistry.INK_EPIC.get();
             case 4 -> (InkItem) ItemRegistry.INK_LEGENDARY.get();
-            case 5 -> (InkItem) SpellbookTiers.MYTHIC_INK.get();
-            case 6 -> (InkItem) SpellbookTiers.ANCIENT_INK.get();
             default -> (InkItem) ItemRegistry.INK_COMMON.get();
         };
     }
 
     public static int getRarityWeight(SpellRarity rarity) {
+        if (isNamedRarity(rarity, MYTHIC_NAME)) {
+            return 2;
+        }
+        if (isNamedRarity(rarity, ANCIENT_NAME) || isOriginRarity(rarity)) {
+            return 1;
+        }
         return switch (rarity.getValue()) {
             case 0 -> 40;
             case 1 -> 30;
             case 2 -> 15;
             case 3 -> 8;
             case 4 -> 4;
-            case 5 -> 2;
-            case 6 -> 1;
             default -> 1;
         };
     }
 
     public static int getMaxSpellRarity(AbstractSpell spell) {
+        if (isFantasyEndingOriginSpell(spell)) {
+            SpellRarity origin = getOriginRarity();
+            return origin != null ? origin.getValue() : SpellRarity.LEGENDARY.getValue();
+        }
         if (!supportsExtendedTiers(spell)) {
             return SpellRarity.LEGENDARY.getValue();
         }
-        return Math.max(SpellRarity.LEGENDARY.getValue(), SpellRarity.values().length - 1);
+        SpellRarity highestExtraRarity = getHighestExtraRarity();
+        return highestExtraRarity != null ? highestExtraRarity.getValue() : SpellRarity.LEGENDARY.getValue();
     }
 
     public static int getExtendedMaxLevel(AbstractSpell spell) {
@@ -200,12 +242,16 @@ public final class SpellbookTiersHooks {
             return 0;
         }
 
+        if (isFantasyEndingOriginSpell(spell)) {
+            return getMinLevelForSpecialRarity(spell, rarity, baseMaxLevel);
+        }
+
         if (!supportsExtendedTiers(spell)) {
             if (baseMaxLevel <= 1) {
                 return rarity.getValue() == minRarity ? 1 : 0;
             }
 
-            if (rarity.getValue() > SpellRarity.LEGENDARY.getValue()) {
+            if (rarity.getValue() > SpellRarity.LEGENDARY.getValue() && !isOriginRarity(rarity)) {
                 return 0;
             }
 
@@ -230,7 +276,13 @@ public final class SpellbookTiersHooks {
         }
 
         if (rarity.getValue() > SpellRarity.LEGENDARY.getValue()) {
-            return Math.min(baseMaxLevel + (rarity.getValue() - SpellRarity.LEGENDARY.getValue()), getExtendedMaxLevel(spell));
+            List<SpellRarity> extraRarities = getExtraRarities();
+            for (int i = 0; i < extraRarities.size(); i++) {
+                if (extraRarities.get(i) == rarity) {
+                    return Math.min(baseMaxLevel + i + 1, getExtendedMaxLevel(spell));
+                }
+            }
+            return 0;
         }
 
         if (rarity.getValue() == minRarity) {
@@ -331,7 +383,7 @@ public final class SpellbookTiersHooks {
     }
 
     private static boolean supportsExtendedTiers(AbstractSpell spell) {
-        return getBaseMaxLevel(spell) > 1;
+        return getBaseMaxLevel(spell) > 1 && !isFantasyEndingOriginSpell(spell);
     }
 
     private static boolean hasExplicitSpellConfigOverride(AbstractSpell spell) {
@@ -343,12 +395,16 @@ public final class SpellbookTiersHooks {
     }
 
     private static int getAdditionalSpellLevels() {
-        return Math.max(0, SpellRarity.values().length - 5);
+        return getExtraRarities().size();
     }
 
     private static SpellRarity getExtraRarityForLevel(int level, int baseMaxLevel) {
-        int rarityIndex = Math.min(SpellRarity.LEGENDARY.getValue() + Math.max(1, level - baseMaxLevel), SpellRarity.values().length - 1);
-        return SpellRarity.values()[rarityIndex];
+        List<SpellRarity> extraRarities = getExtraRarities();
+        if (extraRarities.isEmpty()) {
+            return SpellRarity.LEGENDARY;
+        }
+        int rarityIndex = Math.min(Math.max(1, level - baseMaxLevel) - 1, extraRarities.size() - 1);
+        return extraRarities.get(rarityIndex);
     }
 
     private static List<Double> getBaseRarityWeights(int minRarity) {
@@ -439,5 +495,78 @@ public final class SpellbookTiersHooks {
         } catch (ReflectiveOperationException exception) {
             throw new IllegalStateException("Unable to resolve field offset for " + owner.getName() + "#" + fieldName, exception);
         }
+    }
+
+    private static SpellRarity getOriginRarity() {
+        return findRarity(ORIGIN_NAME);
+    }
+
+    private static boolean hasOriginRarity() {
+        return getOriginRarity() != null;
+    }
+
+    private static boolean isOriginRarity(SpellRarity rarity) {
+        return rarity != null && isNamedRarity(rarity, ORIGIN_NAME);
+    }
+
+    private static boolean isNamedRarity(SpellRarity rarity, String name) {
+        return rarity != null && rarity.name().equals(name);
+    }
+
+    private static List<SpellRarity> getExtraRarities() {
+        List<SpellRarity> rarities = new ArrayList<>(2);
+        SpellRarity mythic = findRarity(MYTHIC_NAME);
+        SpellRarity ancient = findRarity(ANCIENT_NAME);
+        if (mythic != null) {
+            rarities.add(mythic);
+        }
+        if (ancient != null) {
+            rarities.add(ancient);
+        }
+        return List.copyOf(rarities);
+    }
+
+    private static SpellRarity getHighestExtraRarity() {
+        List<SpellRarity> extraRarities = getExtraRarities();
+        return extraRarities.isEmpty() ? null : extraRarities.get(extraRarities.size() - 1);
+    }
+
+    private static int getExpectedRarityConfigSize() {
+        return EXTENDED_DEFAULT.size() + (hasOriginRarity() ? 1 : 0);
+    }
+
+    private static List<Double> adaptExpandedConfig(List<Double> config) {
+        if (hasOriginRarity()) {
+            return appendOriginWeight(config);
+        }
+        return List.copyOf(config);
+    }
+
+    private static List<Double> appendOriginWeight(List<Double> config) {
+        List<Double> expanded = new ArrayList<>(config.size() + 1);
+        expanded.addAll(config);
+        expanded.add(0d);
+        return List.copyOf(expanded);
+    }
+
+    private static boolean isFantasyEndingOriginSpell(AbstractSpell spell) {
+        SpellRarity origin = getOriginRarity();
+        if (origin == null) {
+            return false;
+        }
+        DefaultConfig defaultConfig = spell.getDefaultConfig();
+        if (defaultConfig != null && defaultConfig.minRarity == origin) {
+            return true;
+        }
+        return FANTASY_ENDING_ORIGIN_SPELLS.contains(spell.getSpellId());
+    }
+
+    private static int getMinLevelForSpecialRarity(AbstractSpell spell, SpellRarity rarity, int baseMaxLevel) {
+        for (int level = spell.getMinLevel(); level <= baseMaxLevel; level++) {
+            if (spell.getRarity(level) == rarity) {
+                return level;
+            }
+        }
+        return 0;
     }
 }
