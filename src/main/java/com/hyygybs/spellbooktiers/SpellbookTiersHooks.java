@@ -2,16 +2,20 @@ package com.hyygybs.spellbooktiers;
 
 import io.redspace.ironsspellbooks.api.spells.AbstractSpell;
 import io.redspace.ironsspellbooks.api.spells.SpellRarity;
+import io.redspace.ironsspellbooks.api.config.DefaultConfig;
 import io.redspace.ironsspellbooks.config.ServerConfigs;
 import io.redspace.ironsspellbooks.item.InkItem;
 import io.redspace.ironsspellbooks.registries.ItemRegistry;
 import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
 import net.minecraft.network.chat.MutableComponent;
+import net.minecraftforge.fml.loading.FMLPaths;
 import sun.misc.Unsafe;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -127,13 +131,16 @@ public final class SpellbookTiersHooks {
         };
     }
 
-    public static int getMaxSpellRarity() {
+    public static int getMaxSpellRarity(AbstractSpell spell) {
+        if (!supportsExtendedTiers(spell)) {
+            return SpellRarity.LEGENDARY.getValue();
+        }
         return Math.max(SpellRarity.LEGENDARY.getValue(), SpellRarity.values().length - 1);
     }
 
     public static int getExtendedMaxLevel(AbstractSpell spell) {
         int baseMaxLevel = getBaseMaxLevel(spell);
-        if (baseMaxLevel <= 1) {
+        if (!supportsExtendedTiers(spell)) {
             return baseMaxLevel;
         }
         return baseMaxLevel + getAdditionalSpellLevels();
@@ -143,7 +150,24 @@ public final class SpellbookTiersHooks {
         int minRarity = spell.getMinRarity();
         int baseMaxLevel = getBaseMaxLevel(spell);
 
-        if (baseMaxLevel <= 1) {
+        if (!supportsExtendedTiers(spell)) {
+            if (baseMaxLevel <= 1) {
+                return SpellRarity.values()[minRarity];
+            }
+            if (level >= baseMaxLevel) {
+                return SpellRarity.LEGENDARY;
+            }
+
+            List<Double> rarityWeights = getBaseRarityWeights(minRarity);
+            double percentOfMaxLevel = (double) level / (double) baseMaxLevel;
+            int lookupOffset = SpellRarity.LEGENDARY.getValue() + 1 - rarityWeights.size();
+
+            for (int i = 0; i < rarityWeights.size(); i++) {
+                if (percentOfMaxLevel <= rarityWeights.get(i)) {
+                    return SpellRarity.values()[i + lookupOffset];
+                }
+            }
+
             return SpellRarity.values()[minRarity];
         }
 
@@ -174,6 +198,31 @@ public final class SpellbookTiersHooks {
 
         if (rarity.getValue() < minRarity) {
             return 0;
+        }
+
+        if (!supportsExtendedTiers(spell)) {
+            if (baseMaxLevel <= 1) {
+                return rarity.getValue() == minRarity ? 1 : 0;
+            }
+
+            if (rarity.getValue() > SpellRarity.LEGENDARY.getValue()) {
+                return 0;
+            }
+
+            if (rarity.getValue() == minRarity) {
+                return 1;
+            }
+
+            List<Double> rarityWeights = getBaseRarityWeights(minRarity);
+            int rarityIndex = rarity.getValue() - (1 + minRarity);
+            if (rarityIndex < 0) {
+                return 1;
+            }
+            if (rarityIndex >= rarityWeights.size()) {
+                return baseMaxLevel;
+            }
+
+            return (int) (rarityWeights.get(rarityIndex) * baseMaxLevel) + 1;
         }
 
         if (baseMaxLevel <= 1) {
@@ -259,7 +308,38 @@ public final class SpellbookTiersHooks {
     }
 
     private static int getBaseMaxLevel(AbstractSpell spell) {
+        int defaultMaxLevel = getDefaultMaxLevel(spell);
+        if (defaultMaxLevel <= 1) {
+            return 1;
+        }
+        if (hasExplicitSpellConfigOverride(spell)) {
+            return Math.max(2, getConfiguredMaxLevel(spell));
+        }
+        return defaultMaxLevel;
+    }
+
+    private static int getConfiguredMaxLevel(AbstractSpell spell) {
         return ServerConfigs.getSpellConfig(spell).maxLevel();
+    }
+
+    private static int getDefaultMaxLevel(AbstractSpell spell) {
+        DefaultConfig defaultConfig = spell.getDefaultConfig();
+        if (defaultConfig == null) {
+            return getConfiguredMaxLevel(spell);
+        }
+        return defaultConfig.maxLevel;
+    }
+
+    private static boolean supportsExtendedTiers(AbstractSpell spell) {
+        return getBaseMaxLevel(spell) > 1;
+    }
+
+    private static boolean hasExplicitSpellConfigOverride(AbstractSpell spell) {
+        Path configPath = FMLPaths.CONFIGDIR.get()
+                .resolve("irons_spellbooks_spell_config")
+                .resolve(spell.getSpellResource().getNamespace())
+                .resolve(spell.getSpellResource().getPath() + ".json");
+        return Files.isRegularFile(configPath);
     }
 
     private static int getAdditionalSpellLevels() {

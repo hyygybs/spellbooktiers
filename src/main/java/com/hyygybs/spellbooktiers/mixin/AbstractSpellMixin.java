@@ -12,7 +12,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 abstract class AbstractSpellMixin {
     @Inject(method = "getMaxRarity", at = @At("HEAD"), cancellable = true, remap = false)
     private void spellbooktiers$getMaxRarity(CallbackInfoReturnable<Integer> cir) {
-        cir.setReturnValue(SpellbookTiersHooks.getMaxSpellRarity());
+        cir.setReturnValue(SpellbookTiersHooks.getMaxSpellRarity((AbstractSpell) (Object) this));
     }
 
     @Inject(method = "getMaxLevel", at = @At("HEAD"), cancellable = true, remap = false)
